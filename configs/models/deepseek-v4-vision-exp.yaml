@@ -12,9 +12,23 @@ aliases:
 
 agent_specific:
   # Routed through the Aqueduct OpenAI-compatible endpoint; PiAgent writes
-  # this as a custom provider in the container's models.json.
+  # this as a custom provider in the container's models.json. The compat and
+  # thinkingLevelMap mirror the aqueduct entry in ~/.pi/agent/models.json:
+  # thinking levels flow to the model via chat_template_kwargs.
   pi:
     endpoint: openai
     reasoning: true
     context_window: 393216
     max_tokens: 32000
+    thinkingLevelMap:
+      minimal: null
+      low: low
+      medium: null
+      high: high
+      xhigh: null
+      max: max
+    compat:
+      thinkingFormat: chat-template
+      chatTemplateKwargs:
+        thinking: {"$var": thinking.enabled}
+        reasoning_effort: {"$var": thinking.effort}

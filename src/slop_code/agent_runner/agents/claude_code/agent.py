@@ -298,6 +298,12 @@ class ClaudeCodeAgent(Agent):
                 "claude_code"
             )
 
+        if thinking == "max":
+            raise ValueError(
+                "Thinking preset 'max' is not supported by the Claude Code "
+                "adapter. Use 'xhigh' instead."
+            )
+
         if model.thinking_style == "effort":
             if max_thinking_tokens is not None:
                 raise ValueError(

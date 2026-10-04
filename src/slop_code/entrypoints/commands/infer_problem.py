@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import typing as tp
 from pathlib import Path
 from queue import Queue
 from typing import Annotated
@@ -15,6 +16,7 @@ from slop_code.agent_runner.credentials import API_KEY_STORE
 from slop_code.agent_runner.credentials import CredentialNotFoundError
 from slop_code.agent_runner.registry import build_agent_config
 from slop_code.common.llms import ModelCatalog
+from slop_code.common.llms import ThinkingPreset
 from slop_code.entrypoints import utils
 from slop_code.entrypoints.commands import common
 from slop_code.entrypoints.config import loader as config_loader
@@ -91,7 +93,7 @@ def infer_problem(
     thinking: str | None = typer.Option(
         None,
         "--thinking",
-        help="Thinking budget preset: none, low, medium, or high",
+        help="Thinking budget preset: none, disabled, low, medium, high, xhigh, or max",
     ),
     max_thinking_tokens: int | None = typer.Option(
         None,
@@ -124,7 +126,7 @@ def infer_problem(
         raise typer.Exit(1)
 
     # Validate thinking preset value
-    valid_presets = ("none", "low", "medium", "high")
+    valid_presets = tp.get_args(ThinkingPreset)
     if thinking is not None and thinking not in valid_presets:
         typer.echo(
             typer.style(

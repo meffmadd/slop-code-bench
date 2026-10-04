@@ -1054,6 +1054,31 @@ class TestThinkingConfiguration:
                 thinking_preset="disabled",
             )
 
+    @pytest.mark.parametrize("thinking_style", ["effort", "budget"])
+    @pytest.mark.parametrize("from_model_default", [False, True])
+    def test_rejects_unsupported_max_preset(
+        self,
+        mock_cost_limits: AgentCostLimits,
+        mock_pricing: APIPricing,
+        mock_credential: ProviderCredential,
+        thinking_style: str,
+        *,
+        from_model_default: bool,
+    ) -> None:
+        model = self._make_model(
+            mock_pricing,
+            thinking_style,
+            thinking="max" if from_model_default else None,
+        )
+        with pytest.raises(ValueError, match="'max'.*not supported"):
+            self._make_agent(
+                mock_cost_limits,
+                mock_pricing,
+                mock_credential,
+                model,
+                thinking_preset=None if from_model_default else "max",
+            )
+
     def test_model_definition_rejects_effort_with_token_budget(
         self, mock_pricing
     ):

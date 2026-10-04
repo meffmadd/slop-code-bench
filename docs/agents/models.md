@@ -154,6 +154,11 @@ agent_specific:
 | `low` | ~4,000 tokens |
 | `medium` | ~10,000 tokens |
 | `high` | ~32,000 tokens |
+| `xhigh` | ~32,000 tokens |
+| `max` | Maximum thinking; agent support varies |
+
+Pi supports `max`. The Claude Code adapter rejects this preset; use `xhigh`
+for its highest supported effort level.
 
 ### Configuration Priority
 

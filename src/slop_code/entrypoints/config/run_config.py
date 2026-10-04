@@ -13,7 +13,7 @@ from pydantic import model_validator
 from slop_code.evaluation import PassPolicy
 
 ThinkingPresetType = Literal[
-    "none", "disabled", "low", "medium", "high", "xhigh"
+    "none", "disabled", "low", "medium", "high", "xhigh", "max"
 ]
 
 
@@ -45,7 +45,8 @@ class ThinkingConfig(BaseModel):
     """Thinking configuration - either preset or max_tokens, not both.
 
     Attributes:
-        preset: Named thinking budget (none, disabled, low, medium, high)
+        preset: Named thinking budget (none, disabled, low, medium, high,
+        xhigh, max)
         max_tokens: Explicit maximum thinking tokens
     """
 

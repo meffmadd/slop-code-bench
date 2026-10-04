@@ -35,7 +35,9 @@ from slop_code.execution import EnvironmentSpec
 from slop_code.execution import Session
 from slop_code.execution import StreamingRuntime
 
-PiThinking = tp.Literal["off", "minimal", "low", "medium", "high", "xhigh"]
+PiThinking = tp.Literal[
+    "off", "minimal", "low", "medium", "high", "xhigh", "max"
+]
 
 _SCB_TO_PI_PROVIDER: dict[str, str] = {
     "openai": "openai",
@@ -121,6 +123,9 @@ _PROTECTED_PI_FLAGS = (
     "--mode",
     "--no-session",
     "--session",
+    "--session-id",
+    "--session-dir",
+    "--fork",
     "--continue",
     "-c",
     "--resume",
@@ -239,6 +244,8 @@ class PiAgent(Agent):
     STDERR_FILENAME = "stderr.log"
     MODELS_FILENAME = "models.json"
     EXTENSIONS_DIRNAME = "extensions"
+    SESSIONS_DIRNAME = "sessions"
+    SESSION_ARTIFACT_DIRNAME = "session"
 
     def __init__(
         self,
@@ -291,6 +298,7 @@ class PiAgent(Agent):
         self._last_command: AgentCommandResult | None = None
         self._artifact_payloads: list[dict[str, tp.Any]] = []
         self._saw_assistant_message_end = False
+        self._session_files_at_checkpoint_start: set[Path] | None = None
 
     @classmethod
     def _from_config(
@@ -371,6 +379,31 @@ class PiAgent(Agent):
 
         settings = model.get_agent_settings("pi") or {}
         pricing = model.pricing
+        model_entry: dict[str, tp.Any] = {
+            "id": model.get_model_slug(provider),
+            "name": model.name or model.internal_name,
+            "reasoning": bool(settings.get("reasoning", False)),
+            "input": ["text"],
+            "contextWindow": int(
+                settings.get(
+                    "context_window",
+                    _PI_DEFAULT_CONTEXT_WINDOW,
+                )
+            ),
+            "maxTokens": int(
+                settings.get("max_tokens", _PI_DEFAULT_MAX_TOKENS)
+            ),
+            "cost": {
+                "input": pricing.input,
+                "output": pricing.output,
+                "cacheRead": pricing.cache_read,
+                "cacheWrite": pricing.cache_write,
+            },
+        }
+        for passthrough_key in ("compat", "thinkingLevelMap"):
+            value = settings.get(passthrough_key)
+            if isinstance(value, dict):
+                model_entry[passthrough_key] = value
         return {
             "providers": {
                 provider: {
@@ -379,31 +412,7 @@ class PiAgent(Agent):
                     # pi interpolates "$NAME" / "${NAME}" env references in
                     # models.json; a bare name would be sent as a literal key.
                     "apiKey": f"${{{cls._credential_env_key(credential)}}}",
-                    "models": [
-                        {
-                            "id": model.get_model_slug(provider),
-                            "name": model.name or model.internal_name,
-                            "reasoning": bool(settings.get("reasoning", False)),
-                            "input": ["text"],
-                            "contextWindow": int(
-                                settings.get(
-                                    "context_window",
-                                    _PI_DEFAULT_CONTEXT_WINDOW,
-                                )
-                            ),
-                            "maxTokens": int(
-                                settings.get(
-                                    "max_tokens", _PI_DEFAULT_MAX_TOKENS
-                                )
-                            ),
-                            "cost": {
-                                "input": pricing.input,
-                                "output": pricing.output,
-                                "cacheRead": pricing.cache_read,
-                                "cacheWrite": pricing.cache_write,
-                            },
-                        }
-                    ],
+                    "models": [model_entry],
                 }
             }
         }
@@ -458,6 +467,7 @@ class PiAgent(Agent):
             "medium": "medium",
             "high": "high",
             "xhigh": "xhigh",
+            "max": "max",
         }.get(thinking_preset)
         if mapped is None:
             return None
@@ -682,6 +692,10 @@ class PiAgent(Agent):
         self._last_command = None
         self._artifact_payloads = []
         self._saw_assistant_message_end = False
+        if self._session_files_at_checkpoint_start is None:
+            self._session_files_at_checkpoint_start = (
+                self._collect_session_files()
+            )
 
         log_kwargs: dict[str, tp.Any] = {
             "workspace": str(self.session.working_dir),
@@ -906,12 +920,18 @@ class PiAgent(Agent):
             "--print",
             "--mode",
             "json",
-            "--no-session",
             "--provider",
             self.provider,
             "--model",
             self.model,
         ]
+        if self._pi_agent_dir_env is not None:
+            command.extend(
+                [
+                    "--session-dir",
+                    f"{self._pi_agent_dir_env}/{self.SESSIONS_DIRNAME}",
+                ]
+            )
         if self.thinking:
             command.extend(["--thinking", self.thinking])
         command.extend(self.extra_args)
@@ -980,6 +1000,40 @@ class PiAgent(Agent):
         self._last_command = None
         self._artifact_payloads = []
         self._saw_assistant_message_end = False
+        self._session_files_at_checkpoint_start = None
+
+    def _collect_session_files(self) -> set[Path]:
+        """List pi session files currently staged in the agent dir.
+
+        pi persists one session file per invocation into the benchmark-pinned
+        ``<agent-dir>/sessions/`` directory.
+        """
+        if self._pi_auth_dir is None:
+            return set()
+        sessions_dir = self._pi_auth_dir / self.SESSIONS_DIRNAME
+        if not sessions_dir.exists():
+            return set()
+        return {p for p in sessions_dir.rglob("*.jsonl") if p.is_file()}
+
+    def _save_session_artifacts(self, path: Path) -> None:
+        """Copy all attempts' sessions for this checkpoint into artifacts."""
+        if self._session_files_at_checkpoint_start is None:
+            return
+        new_sessions = (
+            self._collect_session_files()
+            - self._session_files_at_checkpoint_start
+        )
+        if not new_sessions:
+            return
+        session_dir = path / self.SESSION_ARTIFACT_DIRNAME
+        session_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            for src in sorted(new_sessions):
+                shutil.copy2(src, session_dir / src.name)
+        except OSError as e:
+            raise AgentError(
+                f"Failed to save PI session artifact: {e}"
+            ) from e
 
     def save_artifacts(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
@@ -992,6 +1046,7 @@ class PiAgent(Agent):
             stderr_text = self._last_command.stderr or ""
 
         self._write_artifacts(path, self._artifact_payloads, stderr_text)
+        self._save_session_artifacts(path)
 
     def cleanup(self) -> None:
         if self._runtime is not None:
@@ -1004,6 +1059,7 @@ class PiAgent(Agent):
         self._environment = None
         self._pi_auth_dir = None
         self._pi_agent_dir_env = None
+        self._session_files_at_checkpoint_start = None
 
 
 register_agent("pi", PiAgent)

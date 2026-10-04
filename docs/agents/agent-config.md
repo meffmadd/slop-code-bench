@@ -220,12 +220,12 @@ PI follows the same CLI-agent pattern as Codex/Gemini.
 ```yaml
 type: pi
 binary: pi
-version: 0.45.7
+version: 1.0.1
 timeout: 7200
 extra_args: []
 env: {}
 provider: null      # Optional PI provider override
-thinking: null      # off|minimal|low|medium|high|xhigh
+thinking: null      # off|minimal|low|medium|high|xhigh|max
 cost_limits:
   cost_limit: 0
   step_limit: 0
@@ -234,10 +234,19 @@ cost_limits:
 
 Notes:
 
-- PI is always executed with `--print --mode json --no-session` for deterministic benchmark runs.
+- PI is executed with `--print --mode json` and a benchmark-pinned
+  `--session-dir`. Every invocation starts a fresh session.
+- Session files from all attempts, including failed retries, are copied into
+  each checkpoint's `agent/session/` artifacts (or the compressed agent archive).
+- Session selection and storage flags (`--session`, `--session-id`, `--fork`,
+  `--continue`, `--resume`, `--no-session`, and `--session-dir`) are protected
+  from `extra_args`. The pinned directory overrides environment/settings paths.
 - `provider` is optional; by default SCB resolves a provider from the selected credential.
 - `codex_auth` is converted to temporary PI `openai-codex` auth (`PI_CODING_AGENT_DIR`), never written into the user's real `~/.pi`.
-- Top-level SCB thinking presets map where compatible (`low|medium|high|xhigh`, plus `none|disabled -> off`).
+- Top-level SCB thinking presets map to `low|medium|high|xhigh|max`;
+  `disabled` maps to `off`, while `none` leaves pi's native default in place.
+- `configs/runs/pi-deepseek.yaml` selects Aqueduct's DeepSeek model with an
+  explicit `thinking: max`, recorded in the run config and output directory.
 
 Example runs:
 

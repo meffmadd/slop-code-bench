@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from slop_code.agent_runner.credentials import EndpointDefinition
 
 ThinkingPreset = tp.Literal[
-    "none", "disabled", "low", "medium", "high", "xhigh"
+    "none", "disabled", "low", "medium", "high", "xhigh", "max"
 ]
 
 ThinkingStyle = tp.Literal["budget", "effort"]

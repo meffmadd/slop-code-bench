@@ -40,7 +40,7 @@ slop-code infer-problem [OPTIONS] PROBLEM_NAME
 | `-prompt, --prompt-template` | path | **required** | Path to prompt template |
 | `-m, --model` | string | **required** | Model in format `{provider}/{model}` |
 | `--provider-api-key-env` | string | - | Override API key environment variable |
-| `--thinking` | string | - | Thinking budget: none, low, medium, high |
+| `--thinking` | string | - | Thinking budget: none, disabled, low, medium, high, xhigh, max |
 | `--max-thinking-tokens` | int | - | Maximum thinking tokens |
 | `-pass, --pass-policy` | enum | `ANY` | Policy to determine checkpoint pass (any, any-case, all-cases, all-non-error-cases, core-cases, any-core-cases, all-core-cases) |
 | `--evaluate/--no-evaluate` | flag | true | Whether to run evaluation |

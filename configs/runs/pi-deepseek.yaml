@@ -1,0 +1,7 @@
+agent: pi
+environment: docker-python3.12-uv
+prompt: just-solve
+model:
+  provider: aqueduct
+  name: deepseek-v4-vision-exp
+thinking: max

@@ -196,7 +196,7 @@ For complete model configuration options, agent-specific settings, and thinking 
 
 Thinking budget configuration. Can be a preset string or an object:
 
-**Preset strings**: `none`, `disabled`, `low`, `medium`, `high`
+**Preset strings**: `none`, `disabled`, `low`, `medium`, `high`, `xhigh`, `max`
 
 ```yaml
 # Preset (recommended)

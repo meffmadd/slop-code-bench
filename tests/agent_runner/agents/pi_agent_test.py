@@ -10,6 +10,7 @@ import subprocess
 import threading
 from collections.abc import Callable
 from collections.abc import Iterable
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -212,6 +213,18 @@ def _make_pi_agent_with_extensions(
     )
 
 
+@pytest.fixture
+def pi_agent(
+    mock_cost_limits: AgentCostLimits,
+    mock_pricing: APIPricing,
+) -> Iterator[PiAgent]:
+    agent = _make_pi_agent_with_extensions(
+        mock_cost_limits, mock_pricing, []
+    )
+    yield agent
+    agent.cleanup()
+
+
 _SMOKE_FILE_EXTENSION = """\
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -266,7 +279,7 @@ class TestPiConfig:
         config = build_agent_config(data)
         assert isinstance(config, PiConfig)
         assert config.type == "pi"
-        assert config.version == "0.74.0"
+        assert config.version == "1.0.1"
 
     def test_get_docker_file_renders_version(
         self, mock_cost_limits: AgentCostLimits
@@ -547,6 +560,31 @@ class TestPiAgent:
         assert entry["contextWindow"] == 128_000
         assert entry["maxTokens"] == 16_384
 
+    def test_gateway_model_passes_through_compat_and_thinking_map(
+        self,
+        gateway_model_def: ModelDefinition,
+        portkey_credential: ProviderCredential,
+    ) -> None:
+        gateway_model_def.agent_specific["pi"] = {
+            "endpoint": "openai",
+            "reasoning": True,
+            "context_window": 393216,
+            "max_tokens": 32000,
+            "compat": {"supportsReasoningEffort": False},
+            "thinkingLevelMap": {"low": "low", "high": "high"},
+        }
+
+        models_json = PiAgent._build_models_json(
+            provider="portkey",
+            model=gateway_model_def,
+            credential=portkey_credential,
+        )
+
+        assert models_json is not None
+        entry = models_json["providers"]["portkey"]["models"][0]
+        assert entry["compat"] == {"supportsReasoningEffort": False}
+        assert entry["thinkingLevelMap"] == {"low": "low", "high": "high"}
+
     def test_gateway_model_maps_anthropic_endpoint_to_pi_api(
         self,
         gateway_model_def: ModelDefinition,
@@ -708,7 +746,7 @@ class TestPiAgent:
         """Staged extensions are auto-loaded by a real pi CLI.
 
         Runs the locally installed ``pi`` binary (benchmark containers
-        pin 0.74.0; the ``extensions/`` discovery layout is the same).
+        pin 1.0.1; the ``extensions/`` discovery layout is the same).
         Each staged extension registers a flag, which ``pi --help`` lists.
         """
         pi_binary = shutil.which("pi")
@@ -803,7 +841,9 @@ class TestPiAgent:
         assert "--print" in command
         assert "--mode" in command
         assert "json" in command
-        assert "--no-session" in command
+        # Sessions stay enabled so each checkpoint's pi conversation is
+        # persisted as a session artifact.
+        assert "--no-session" not in command
         assert "--provider" in command
         assert "openai" in command
         assert "--model" in command
@@ -853,6 +893,14 @@ class TestPiAgent:
             thinking_max_tokens=None,
         )
         assert thinking == "off"
+
+    def test_resolve_pi_thinking_max_preset_maps_to_max(self) -> None:
+        thinking = PiAgent._resolve_pi_thinking(
+            config_thinking=None,
+            thinking_preset="max",
+            thinking_max_tokens=None,
+        )
+        assert thinking == "max"
 
     def test_build_command_rejects_forbidden_extra_args(
         self,
@@ -1341,6 +1389,210 @@ class TestPiAgent:
         assert not (output_dir / "messages.jsonl").exists()
         assert (output_dir / "stderr.log").read_text() == "warning\n"
         assert (output_dir / "prompt.txt").read_text() == "do something"
+
+    @pytest.mark.parametrize("docker", [False, True])
+    def test_session_directory_is_pinned(
+        self,
+        tmp_path: Path,
+        pi_agent: PiAgent,
+        *,
+        docker: bool,
+    ) -> None:
+        session = _make_docker_session(tmp_path)
+        if not docker:
+            session.spec = None
+        pi_agent.env["PI_CODING_AGENT_SESSION_DIR"] = str(
+            tmp_path / "elsewhere"
+        )
+        pi_agent.setup(cast("Session", session))
+
+        command, _ = pi_agent._prepare_runtime_execution("do something")
+
+        assert command.count("--session-dir") == 1
+        directory = command[command.index("--session-dir") + 1]
+        assert pi_agent._pi_auth_dir is not None
+        expected = (
+            f"{HOME_PATH}/.pi/agent/sessions"
+            if docker
+            else str(pi_agent._pi_auth_dir / "sessions")
+        )
+        assert directory == expected
+
+    @pytest.mark.parametrize(
+        "flag",
+        [
+            "--session-id",
+            "--session-id=fixed",
+            "--fork",
+            "--fork=existing.jsonl",
+            "--session-dir",
+            "--session-dir=elsewhere",
+        ],
+    )
+    def test_session_lifecycle_flags_are_protected(
+        self, pi_agent: PiAgent, flag: str
+    ) -> None:
+        pi_agent.extra_args = [flag]
+        with pytest.raises(AgentError, match="protected PI flag"):
+            pi_agent._build_command("do something")
+
+    @pytest.mark.parametrize("all_attempts_fail", [False, True])
+    def test_session_artifacts_include_retries_and_exclude_prior_checkpoints(
+        self,
+        tmp_path: Path,
+        pi_agent: PiAgent,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        all_attempts_fail: bool,
+    ) -> None:
+        session = _make_docker_session(tmp_path)
+        pi_agent.cost_limits.max_retries = 1
+        pi_agent.setup(cast("Session", session))
+        assert pi_agent._pi_auth_dir is not None
+        sessions_dir = pi_agent._pi_auth_dir / "sessions"
+        sessions_dir.mkdir()
+        (sessions_dir / "prior.jsonl").write_text("prior checkpoint")
+        attempts: list[Path] = []
+
+        def stream(
+            command: str,
+            env: dict[str, str],
+            timeout: float | None,
+        ) -> Iterable[RuntimeEvent]:
+            index = len(attempts) + 1
+            session_file = sessions_dir / f"attempt-{index}.jsonl"
+            session_file.write_text(f"session for attempt {index}")
+            attempts.append(session_file)
+            stdout = json.dumps(
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Done"}],
+                        "usage": {"input": 1, "output": 1},
+                    },
+                }
+            ) + "\n"
+            yield RuntimeEvent(kind="stdout", text=stdout)
+            yield RuntimeEvent(
+                kind="finished",
+                result=RuntimeResult(
+                    exit_code=1 if index == 1 or all_attempts_fail else 0,
+                    stdout=stdout,
+                    stderr="",
+                    setup_stdout="",
+                    setup_stderr="",
+                    elapsed=0.1,
+                    timed_out=False,
+                ),
+            )
+
+        monkeypatch.setattr(session.runtime, "stream", stream)
+        result = pi_agent.run_checkpoint("first checkpoint")
+        assert result.had_error is all_attempts_fail
+        first_artifacts = tmp_path / "first-artifacts"
+        pi_agent.save_artifacts(first_artifacts)
+        saved = first_artifacts / "session"
+        assert {path.name for path in saved.iterdir()} == {
+            "attempt-1.jsonl",
+            "attempt-2.jsonl",
+        }
+        for path in attempts:
+            assert (saved / path.name).read_text() == path.read_text()
+
+        previous_attempts = len(attempts)
+        pi_agent.finish_checkpoint()
+        idle_artifacts = tmp_path / "idle-artifacts"
+        pi_agent.save_artifacts(idle_artifacts)
+        assert not (idle_artifacts / "session").exists()
+
+        pi_agent.run_checkpoint("second checkpoint")
+        second_artifacts = tmp_path / "second-artifacts"
+        pi_agent.save_artifacts(second_artifacts)
+        assert {
+            path.name for path in (second_artifacts / "session").iterdir()
+        } == {path.name for path in attempts[previous_attempts:]}
+
+    def test_save_artifacts_copies_session_created_during_checkpoint(
+        self,
+        tmp_path: Path,
+        pi_agent: PiAgent,
+    ) -> None:
+        runtime = FakeRuntime()
+        message_end = json.dumps(
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Done"}],
+                    "usage": {"input": 1, "output": 1},
+                },
+            }
+        )
+        runtime.events = [
+            RuntimeEvent(kind="stdout", text=f"{message_end}\n"),
+            RuntimeEvent(
+                kind="finished",
+                result=RuntimeResult(
+                    exit_code=0,
+                    stdout=f"{message_end}\n",
+                    stderr="",
+                    setup_stdout="",
+                    setup_stderr="",
+                    elapsed=0.1,
+                    timed_out=False,
+                ),
+            ),
+        ]
+        spec = DockerEnvironmentSpec(
+            name="docker-test",
+            docker=DockerConfig(image="pi-test-image"),
+        )
+        session = FakeSession(runtime=runtime, working_dir=tmp_path, spec=spec)
+        agent = pi_agent
+        agent.setup(cast("Session", session))
+
+        # A session file from an earlier checkpoint already exists.
+        earlier = (
+            agent._pi_auth_dir
+            / "sessions"
+            / "--workspace--"
+            / "2026-10-04T11-00-00-000Z_earlier.jsonl"
+        )
+        earlier.parent.mkdir(parents=True)
+        earlier.write_text('{"type": "session", "id": "earlier"}')
+
+        agent.run("do something")
+
+        # pi writes this checkpoint's session after the run starts.
+        current = (
+            agent._pi_auth_dir
+            / "sessions"
+            / "--workspace--"
+            / "2026-10-04T12-00-00-000Z_current.jsonl"
+        )
+        current.write_text('{"type": "session", "id": "current"}')
+
+        output_dir = tmp_path / "artifacts"
+        agent.save_artifacts(output_dir)
+
+        saved = output_dir / "session"
+        assert (saved / current.name).read_text() == (
+            '{"type": "session", "id": "current"}'
+        )
+        # Sessions from previous checkpoints are not re-copied.
+        assert not (saved / earlier.name).exists()
+        assert len(list(saved.iterdir())) == 1
+
+    def test_save_artifacts_without_session_files_skips_session_dir(
+        self,
+        tmp_path: Path,
+        pi_agent: PiAgent,
+    ) -> None:
+        output_dir = tmp_path / "artifacts"
+        pi_agent.save_artifacts(output_dir)
+
+        assert not (output_dir / "session").exists()
 
     def test_run_raises_when_stream_ends_without_final_message(
         self,
