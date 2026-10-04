@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import shutil
+import subprocess
 import threading
 from collections.abc import Callable
 from collections.abc import Iterable
@@ -175,6 +178,63 @@ def portkey_credential() -> ProviderCredential:
     )
 
 
+def _make_docker_session(tmp_path: Path) -> FakeSession:
+    """Build a session with a Docker spec, mirroring benchmark runs."""
+    spec = DockerEnvironmentSpec(
+        name="docker-test",
+        docker=DockerConfig(image="pi-test-image"),
+    )
+    return FakeSession(runtime=FakeRuntime(), working_dir=tmp_path, spec=spec)
+
+
+def _make_pi_agent_with_extensions(
+    mock_cost_limits: AgentCostLimits,
+    mock_pricing: APIPricing,
+    extensions: list[Path],
+) -> PiAgent:
+    """Build a PiAgent configured with the given extension paths."""
+    return PiAgent(
+        problem_name="test-problem",
+        verbose=False,
+        image="pi-test-image",
+        cost_limits=mock_cost_limits,
+        pricing=mock_pricing,
+        credential=None,
+        binary="pi",
+        provider="openai",
+        model="gpt-5.2-codex",
+        timeout=None,
+        thinking=None,
+        extra_args=[],
+        env={},
+        models_json=None,
+        extensions=extensions,
+    )
+
+
+_SMOKE_FILE_EXTENSION = """\
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerFlag("scb-smoke-file", {
+    description: "SCB smoke test file flag",
+    type: "boolean",
+  });
+}
+"""
+
+_SMOKE_DIR_EXTENSION = """\
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerFlag("scb-smoke-dir", {
+    description: "SCB smoke test directory flag",
+    type: "boolean",
+  });
+}
+"""
+
+
 class TestPiConfig:
     """Tests for PiConfig."""
 
@@ -197,6 +257,7 @@ class TestPiConfig:
         assert config.timeout is None
         assert config.extra_args == []
         assert config.env == {}
+        assert config.extensions == []
         assert config.provider is None
         assert config.thinking is None
 
@@ -269,6 +330,40 @@ class TestPiAgent:
         assert agent.binary == "pi"
         assert agent.provider == "openai"
         assert agent.model == "gpt-5.2-codex"
+
+    def test_from_config_passes_extensions(
+        self,
+        tmp_path: Path,
+        mock_cost_limits: AgentCostLimits,
+        mock_model_def: ModelDefinition,
+    ) -> None:
+        extension = tmp_path / "hello.ts"
+        extension.write_text("export default function () {}\n")
+        config = PiConfig(
+            type="pi",
+            version="0.74.0",
+            cost_limits=mock_cost_limits,
+            extensions=[extension],
+        )
+        credential = ProviderCredential(
+            provider="openai",
+            credential_type=CredentialType.ENV_VAR,
+            value="test-api-key",
+            source="OPENAI_API_KEY",
+            destination_key="OPENAI_API_KEY",
+        )
+
+        agent = PiAgent._from_config(
+            config=config,
+            model=mock_model_def,
+            credential=credential,
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+        )
+
+        assert isinstance(agent, PiAgent)
+        assert agent.extensions == [extension]
 
     def test_from_config_maps_disabled_thinking_to_headless_off(
         self,
@@ -477,13 +572,6 @@ class TestPiAgent:
         mock_pricing: APIPricing,
         portkey_credential: ProviderCredential,
     ) -> None:
-        spec = DockerEnvironmentSpec(
-            name="docker-test",
-            docker=DockerConfig(image="pi-test-image"),
-        )
-        session = FakeSession(
-            runtime=FakeRuntime(), working_dir=tmp_path, spec=spec
-        )
         models_json = {"providers": {"portkey": {"models": []}}}
 
         agent = PiAgent(
@@ -503,11 +591,162 @@ class TestPiAgent:
             models_json=models_json,
         )
 
-        agent.setup(cast("Session", session))
+        agent.setup(cast("Session", _make_docker_session(tmp_path)))
 
         assert agent._pi_auth_dir is not None
         written = agent._pi_auth_dir / PiAgent.MODELS_FILENAME
         assert json.loads(written.read_text()) == models_json
+
+    def test_setup_stages_extensions_into_pi_agent_dir(
+        self,
+        tmp_path: Path,
+        mock_cost_limits: AgentCostLimits,
+        mock_pricing: APIPricing,
+    ) -> None:
+        extension_file = tmp_path / "hello.ts"
+        extension_file.write_text("export default function (pi) {}\n")
+        extension_dir = tmp_path / "toolbelt"
+        extension_dir.mkdir()
+        (extension_dir / "index.ts").write_text(
+            "export default function (pi) {}\n"
+        )
+        (extension_dir / "helpers").mkdir()
+        (extension_dir / "helpers" / "util.ts").write_text("export {};\n")
+        helper = extension_dir / "helpers" / "run.sh"
+        helper.write_text("#!/bin/sh\nprintf ok\n")
+        helper.chmod(0o755)
+
+        agent = _make_pi_agent_with_extensions(
+            mock_cost_limits,
+            mock_pricing,
+            extensions=[extension_file, extension_dir],
+        )
+        agent.setup(cast("Session", _make_docker_session(tmp_path)))
+
+        assert agent._pi_auth_dir is not None
+        staged_dir = agent._pi_auth_dir / PiAgent.EXTENSIONS_DIRNAME
+        staged_file = staged_dir / "hello.ts"
+        staged_nested = staged_dir / "toolbelt" / "helpers" / "util.ts"
+        staged_helper = staged_dir / "toolbelt" / "helpers" / "run.sh"
+        assert staged_file.read_text() == "export default function (pi) {}\n"
+        assert (staged_dir / "toolbelt" / "index.ts").exists()
+        assert staged_nested.read_text() == "export {};\n"
+        assert staged_dir.stat().st_mode & 0o777 == 0o777
+        assert staged_file.stat().st_mode & 0o777 == 0o666
+        assert staged_nested.stat().st_mode & 0o777 == 0o666
+        # Executable bits survive staging (chmod a+rwX semantics).
+        assert staged_helper.stat().st_mode & 0o777 == 0o777
+
+    def test_setup_raises_for_missing_extension_path(
+        self,
+        tmp_path: Path,
+        mock_cost_limits: AgentCostLimits,
+        mock_pricing: APIPricing,
+    ) -> None:
+        agent = _make_pi_agent_with_extensions(
+            mock_cost_limits,
+            mock_pricing,
+            extensions=[tmp_path / "missing.ts"],
+        )
+
+        with pytest.raises(AgentError, match="does not exist"):
+            agent.setup(cast("Session", _make_docker_session(tmp_path)))
+
+    def test_setup_raises_on_extension_name_collision(
+        self,
+        tmp_path: Path,
+        mock_cost_limits: AgentCostLimits,
+        mock_pricing: APIPricing,
+    ) -> None:
+        first = tmp_path / "a" / "ext.ts"
+        second = tmp_path / "b" / "ext.ts"
+        for path in (first, second):
+            path.parent.mkdir()
+            path.write_text("export {};\n")
+
+        agent = _make_pi_agent_with_extensions(
+            mock_cost_limits,
+            mock_pricing,
+            extensions=[first, second],
+        )
+
+        with pytest.raises(AgentError, match="collision"):
+            agent.setup(cast("Session", _make_docker_session(tmp_path)))
+
+    def test_setup_wraps_staging_failures_as_agent_error(
+        self,
+        tmp_path: Path,
+        mock_cost_limits: AgentCostLimits,
+        mock_pricing: APIPricing,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        extension = tmp_path / "hello.ts"
+        extension.write_text("export default function (pi) {}\n")
+
+        def raise_os_error(*args: object, **kwargs: object) -> None:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(
+            "slop_code.agent_runner.agents.pi.agent.shutil.copy",
+            raise_os_error,
+        )
+        agent = _make_pi_agent_with_extensions(
+            mock_cost_limits,
+            mock_pricing,
+            extensions=[extension],
+        )
+
+        with pytest.raises(AgentError, match="Failed to stage PI extension"):
+            agent.setup(cast("Session", _make_docker_session(tmp_path)))
+
+    def test_staged_extensions_load_in_pi(
+        self,
+        tmp_path: Path,
+        mock_cost_limits: AgentCostLimits,
+        mock_pricing: APIPricing,
+    ) -> None:
+        """Staged extensions are auto-loaded by a real pi CLI.
+
+        Runs the locally installed ``pi`` binary (benchmark containers
+        pin 0.74.0; the ``extensions/`` discovery layout is the same).
+        Each staged extension registers a flag, which ``pi --help`` lists.
+        """
+        pi_binary = shutil.which("pi")
+        if pi_binary is None:
+            pytest.skip("pi CLI not installed")
+
+        extension_file = tmp_path / "smoke-file.ts"
+        extension_file.write_text(_SMOKE_FILE_EXTENSION)
+        extension_dir = tmp_path / "smoke-dir"
+        extension_dir.mkdir()
+        (extension_dir / "index.ts").write_text(_SMOKE_DIR_EXTENSION)
+
+        agent = _make_pi_agent_with_extensions(
+            mock_cost_limits,
+            mock_pricing,
+            extensions=[extension_file, extension_dir],
+        )
+        agent.setup(cast("Session", _make_docker_session(tmp_path)))
+
+        assert agent._pi_auth_dir is not None
+        result = subprocess.run(  # noqa: S603 - fixed pi --help invocation
+            [pi_binary, "--help"],
+            env={
+                **os.environ,
+                "PI_CODING_AGENT_DIR": str(agent._pi_auth_dir),
+                "PI_OFFLINE": "1",
+                "PI_SKIP_VERSION_CHECK": "1",
+                "PI_TELEMETRY": "0",
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "--scb-smoke-file" in result.stdout
+        assert "--scb-smoke-dir" in result.stdout
 
     def test_gateway_credential_uses_provider_env_var(
         self,

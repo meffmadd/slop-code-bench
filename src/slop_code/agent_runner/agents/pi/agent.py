@@ -8,6 +8,7 @@ import functools
 import json
 import os
 import shlex
+import shutil
 import tempfile
 import typing as tp
 from pathlib import Path
@@ -186,6 +187,26 @@ def _extract_expiry_ms(*tokens: str | None) -> int:
     return 0
 
 
+def _relax_permission_modes(root: Path) -> None:
+    """Make staged files usable by any container uid.
+
+    Containers run as the host user's uid:gid rather than the image's
+    ``agent`` user, so copied files must be usable regardless of the
+    host umask, mirroring the ``chmod -R a+rwX`` in the docker template.
+    Files that carry executable bits keep them so bundled helper
+    scripts and binaries stay runnable.
+    """
+    root.chmod(0o777)
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            path.chmod(0o777)
+        else:
+            executable = path.stat().st_mode & 0o111
+            path.chmod(0o777 if executable else 0o666)
+
+
 class PiConfig(AgentConfigBase):
     """Configuration for ``PiAgent`` instances."""
 
@@ -195,6 +216,7 @@ class PiConfig(AgentConfigBase):
     timeout: int | None = None
     extra_args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+    extensions: list[Path] = Field(default_factory=list)
     provider: str | None = None
     thinking: PiThinking | None = None
     docker_template: Path = Path(__file__).parent / "docker.j2"
@@ -216,6 +238,7 @@ class PiAgent(Agent):
     STDOUT_FILENAME = "stdout.jsonl"
     STDERR_FILENAME = "stderr.log"
     MODELS_FILENAME = "models.json"
+    EXTENSIONS_DIRNAME = "extensions"
 
     def __init__(
         self,
@@ -235,6 +258,7 @@ class PiAgent(Agent):
         extra_args: list[str],
         env: dict[str, str],
         models_json: dict[str, tp.Any] | None,
+        extensions: list[Path] | None = None,
     ) -> None:
         super().__init__(
             agent_name="pi",
@@ -252,6 +276,7 @@ class PiAgent(Agent):
         self.thinking = thinking
         self.extra_args = extra_args
         self.env = env
+        self.extensions = list(extensions or [])
         self.models_json = models_json
 
         self._image = image
@@ -320,6 +345,7 @@ class PiAgent(Agent):
             thinking=thinking,
             extra_args=config.extra_args,
             env=config.env,
+            extensions=config.extensions,
             models_json=models_json,
         )
 
@@ -577,6 +603,9 @@ class PiAgent(Agent):
             )
             models_path.chmod(0o666)
 
+        if self.extensions:
+            self._stage_extensions(self._pi_auth_dir / self.EXTENSIONS_DIRNAME)
+
         pi_agent_container_path = f"{HOME_PATH}/.pi/agent"
         mounts: dict[str, dict[str, str] | str] = {}
         if isinstance(session.spec, DockerEnvironmentSpec):
@@ -597,6 +626,37 @@ class PiAgent(Agent):
             image=self._image,
             disable_setup=True,
         )
+
+    def _stage_extensions(self, target_dir: Path) -> None:
+        """Copy configured extensions into the pi agent directory.
+
+        Pi loads extensions from ``<agent-dir>/extensions/`` at startup.
+        Each entry may be a single ``.ts``/``.js`` file or a directory
+        with an ``index.ts``/``index.js`` entry point.
+        """
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for source in self.extensions:
+            if not source.exists():
+                raise AgentError(f"PI extension path does not exist: {source}")
+            destination = target_dir / source.name
+            if destination.exists():
+                raise AgentError(f"PI extension name collision: {source.name}")
+            try:
+                if source.is_dir():
+                    shutil.copytree(source, destination)
+                else:
+                    shutil.copy(source, destination)
+            except OSError as e:
+                raise AgentError(
+                    f"Failed to stage PI extension {source}: {e}"
+                ) from e
+        try:
+            _relax_permission_modes(target_dir)
+        except OSError as e:
+            raise AgentError(
+                f"Failed to relax permissions on staged PI extensions "
+                f"in {target_dir}: {e}"
+            ) from e
 
     def _write_converted_codex_auth(self, target_dir: Path) -> None:
         if self.credential is None:

@@ -5,6 +5,11 @@ version: 0.74.0
 timeout: 7200 # seconds; adjust to fit expected checkpoint duration
 extra_args: []
 env: {}
+# Local extension files or directories copied into the container's
+# ~/.pi/agent/extensions/ and auto-loaded by pi at startup. Entries may be
+# single .ts/.js files or directories with an index.ts/index.js entry point.
+# Paths resolve against the working directory of the slop-code invocation.
+extensions: []
 cost_limits:
   cost_limit: 0
   step_limit: 0
