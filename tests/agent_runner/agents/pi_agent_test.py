@@ -510,7 +510,7 @@ class TestPiAgent:
         provider_entry = agent.models_json["providers"]["portkey"]
         assert provider_entry["baseUrl"] == "https://api.portkey.ai/v1"
         assert provider_entry["api"] == "openai-completions"
-        assert provider_entry["apiKey"] == "PORTKEY_API_KEY"
+        assert provider_entry["apiKey"] == "${PORTKEY_API_KEY}"
         assert provider_entry["models"] == [
             {
                 "id": "@openrouter/moonshotai/kimi-k3",

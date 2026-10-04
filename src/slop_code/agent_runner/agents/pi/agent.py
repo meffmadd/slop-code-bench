@@ -376,7 +376,9 @@ class PiAgent(Agent):
                 provider: {
                     "baseUrl": endpoint.api_base,
                     "api": _PI_API_FORMATS[endpoint.api_format],
-                    "apiKey": cls._credential_env_key(credential),
+                    # pi interpolates "$NAME" / "${NAME}" env references in
+                    # models.json; a bare name would be sent as a literal key.
+                    "apiKey": f"${{{cls._credential_env_key(credential)}}}",
                     "models": [
                         {
                             "id": model.get_model_slug(provider),

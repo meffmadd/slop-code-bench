@@ -152,6 +152,15 @@ providers:
     env_var: KIMI_API_KEY
     description: Kimi API key for direct kimi.com coding endpoint
 
+  aqueduct:
+    type: env_var
+    env_var: AQUEDUCT_API_KEY
+    description: Aqueduct AI gateway API key (TU Wien Data Lab)
+    endpoints:
+      openai:
+        api_base: https://aqueduct.ai.datalab.tuwien.ac.at/v1
+        api_format: openai
+
   # File-based providers
   codex_auth:
     type: file

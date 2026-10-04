@@ -1,0 +1,20 @@
+# DeepSeek V4 Flash Vision (experimental) served through the Aqueduct gateway.
+# Mirrors the "aqueduct" provider entry in ~/.pi/agent/models.json.
+internal_name: deepseek-v4-vision-exp-284b
+provider: aqueduct
+pricing:
+  input: 0
+  output: 0
+  cache_read: 0
+  cache_write: 0
+aliases:
+  - deepseek-v4-vision-exp
+
+agent_specific:
+  # Routed through the Aqueduct OpenAI-compatible endpoint; PiAgent writes
+  # this as a custom provider in the container's models.json.
+  pi:
+    endpoint: openai
+    reasoning: true
+    context_window: 393216
+    max_tokens: 32000
