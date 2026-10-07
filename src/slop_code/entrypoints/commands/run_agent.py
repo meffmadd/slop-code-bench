@@ -28,6 +28,7 @@ from slop_code.entrypoints.config import ResolvedRunConfig
 from slop_code.entrypoints.config import load_run_config
 from slop_code.entrypoints.config import loader as config_loader
 from slop_code.entrypoints.config.loader import load_config_from_run_dir
+from slop_code.entrypoints.config.run_config import SloppinessRunSettings
 from slop_code.entrypoints.evaluation.metrics import update_results_jsonl
 from slop_code.entrypoints.utils import count_expected_checkpoints
 from slop_code.entrypoints.utils import display_and_save_summary
@@ -782,6 +783,7 @@ def _handle_early_completion(
     *,
     evaluate: bool,
     requested: list[str],
+    sloppiness: SloppinessRunSettings | None = None,
 ) -> bool:
     """Handle case when all problems are already completed.
 
@@ -812,6 +814,7 @@ def _handle_early_completion(
             problems_base_path=problems_base_path,
             problem_names=requested,
             console=console,
+            sloppiness=sloppiness,
         )
     return True
 
@@ -930,7 +933,35 @@ def _create_task_config(
         image=image_name,
         resume=resume,
         one_shot=run_cfg.one_shot,
+        sloppiness=(
+            run_cfg.sloppiness if run_cfg.sloppiness.enabled else None
+        ),
     )
+
+
+def _measure_sloppiness_run(
+    run_dir: Path,
+    problem_names: list[str],
+    settings: SloppinessRunSettings,
+) -> None:
+    """Measure the run with the standalone sloppiness package.
+
+    Failures are isolated by contract and never affect the run summary.
+    """
+    from slop_code.sloppiness import measure_run
+
+    summary = measure_run(
+        run_dir,
+        problems=problem_names,
+        settings=settings.settings or None,
+    )
+    if summary:
+        logger.info(
+            "Sloppiness measurements persisted",
+            run_directory=str(run_dir),
+            checkpoints=summary["checkpoints_analyzed"],
+            status=summary["status"],
+        )
 
 
 def register(app: typer.Typer, name: str) -> None:
@@ -996,8 +1027,14 @@ def _create_checkpoint_results_and_summary(
     problems_base_path: Path,
     problem_names: list[str],
     console: Console,
+    sloppiness: SloppinessRunSettings | None = None,
 ) -> None:
-    """Generate checkpoint_results.jsonl and a run summary."""
+    """Generate checkpoint_results.jsonl and a run summary.
+
+    When sloppiness measurement is enabled, the run-level sloppiness
+    report (with per-problem trends) is measured and persisted before
+    the summary so rows and summary carry the new fields.
+    """
     problems_to_process = {
         name for name in problem_names if (run_dir / name).exists()
     }
@@ -1011,6 +1048,10 @@ def _create_checkpoint_results_and_summary(
             run_directory=str(run_dir),
         )
         return
+
+    if sloppiness is not None and sloppiness.enabled:
+        problem_list = sorted(problems_to_process)
+        _measure_sloppiness_run(run_dir, problem_list, sloppiness)
 
     results_file = run_dir / CHECKPOINT_RESULTS_FILENAME
     all_reports: list[dict[str, object]] = []
@@ -1145,6 +1186,14 @@ def run_agent(
         "--dry-run",
         help="Preview what would be done without making changes (use with --resume)",
     ),
+    sloppiness: bool | None = typer.Option(  # noqa: FBT001,FBT003
+        None,
+        "--sloppiness/--no-sloppiness",
+        help=(
+            "Opt-in sloppiness measurement during the run (default: off; "
+            "config key sloppiness.enabled)"
+        ),
+    ),
     # Config overrides via positional arguments
     overrides: list[str] | None = typer.Argument(
         None,
@@ -1235,6 +1284,13 @@ def run_agent(
         # Resolve output directory
         run_dir, run_dir_preexisted = _resolve_output_directory(
             run_cfg.output_path, debug=ctx.obj.debug
+        )
+
+    # 1b. Apply the --sloppiness flag override to the loaded config
+    # (before any artifacts are saved or problems run)
+    if sloppiness is not None:
+        run_cfg.sloppiness = run_cfg.sloppiness.model_copy(
+            update={"enabled": sloppiness}
         )
 
     # 2. Resolve managed problem catalog
@@ -1379,6 +1435,7 @@ def run_agent(
             console,
             evaluate=evaluate,
             requested=requested,
+            sloppiness=run_cfg.sloppiness,
         ):
             return
 
@@ -1447,6 +1504,7 @@ def run_agent(
             problems_base_path=problem_root,
             problem_names=problem_names_resolved,
             console=console,
+            sloppiness=run_cfg.sloppiness,
         )
     else:
         run_logger.info(

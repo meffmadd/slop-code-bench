@@ -66,6 +66,22 @@ class ThinkingConfig(BaseModel):
         return self
 
 
+class SloppinessRunSettings(BaseModel):
+    """Opt-in sloppiness measurement configuration for a run.
+
+    Disabled by default. When enabled, checkpoints are measured with the
+    standalone ``sloppiness`` package after evaluation, and per-checkpoint
+    sidecars plus a run-level report are persisted. The ``settings`` dict
+    is passed through to the analyzer (see the sloppiness-metrics
+    AnalysisSettings contract).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunConfig(BaseModel):
     """Unified run configuration for the agent runner.
 
@@ -112,6 +128,11 @@ class RunConfig(BaseModel):
     problems: list[str] = Field(default_factory=list)
 
     one_shot: OneShotConfig = Field(default_factory=OneShotConfig)
+
+    # Opt-in sloppiness measurement (disabled by default)
+    sloppiness: SloppinessRunSettings = Field(
+        default_factory=SloppinessRunSettings
+    )
 
     # Output path configuration with interpolation support
     # Available variables: ${model.name}, ${model.provider}, ${agent.type},
@@ -175,3 +196,6 @@ class ResolvedRunConfig(BaseModel):
     save_template: str
     output_path: str
     one_shot: OneShotConfig = Field(default_factory=OneShotConfig)
+    sloppiness: SloppinessRunSettings = Field(
+        default_factory=SloppinessRunSettings
+    )

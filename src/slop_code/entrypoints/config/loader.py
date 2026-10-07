@@ -15,6 +15,7 @@ from slop_code.entrypoints.config.resolvers import register_resolvers
 from slop_code.entrypoints.config.run_config import ModelConfig
 from slop_code.entrypoints.config.run_config import OneShotConfig
 from slop_code.entrypoints.config.run_config import ResolvedRunConfig
+from slop_code.entrypoints.config.run_config import SloppinessRunSettings
 from slop_code.entrypoints.config.run_config import ThinkingConfig
 from slop_code.entrypoints.config.run_config import ThinkingPresetType
 from slop_code.evaluation import PassPolicy
@@ -503,6 +504,17 @@ def load_run_config(
     except ValidationError as exc:
         raise ValueError(f"Invalid one_shot configuration: {exc}") from exc
 
+    # 12b. Parse optional sloppiness configuration
+    sloppiness_raw = cfg_dict.get("sloppiness", {})
+    if not isinstance(sloppiness_raw, dict):
+        raise ValueError(
+            f"Invalid sloppiness config type: {type(sloppiness_raw).__name__}"
+        )
+    try:
+        sloppiness = SloppinessRunSettings(**sloppiness_raw)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid sloppiness configuration: {exc}") from exc
+
     # 13. Build interpolation context and resolve output_path
     context = _build_interpolation_context(
         agent_data=agent_data,
@@ -553,6 +565,7 @@ def load_run_config(
         save_template=save_template,
         output_path=output_path,
         one_shot=one_shot,
+        sloppiness=sloppiness,
     )
 
 

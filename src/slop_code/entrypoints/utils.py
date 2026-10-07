@@ -450,7 +450,9 @@ def display_and_save_summary(
         )
         return None
 
-    summary = compute_run_summary(config, checkpoint_data, expected_checkpoints)
+    summary = compute_run_summary(
+        config, checkpoint_data, expected_checkpoints, run_dir=run_dir
+    )
     render_summary_table(summary, console)
     save_summary_json(summary, run_dir)
 

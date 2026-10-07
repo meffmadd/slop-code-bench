@@ -143,6 +143,13 @@ def get_checkpoint_metrics(
         **get_rubric_metrics(checkpoint_dir),
     }
 
+    # Namespaced sloppiness fields from an opt-in sidecar, when present.
+    # Reading the sidecar works without the standalone package, so
+    # summaries rebuilds preserve persisted measurements.
+    from slop_code.sloppiness import checkpoint_fields
+
+    metrics.update(checkpoint_fields(checkpoint_dir))
+
     # Add rubric density metric if applicable
     if "rubric_total_flags" in metrics and metrics.get("loc", 0) > 0:
         metrics["rubric_per_loc"] = (

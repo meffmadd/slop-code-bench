@@ -131,6 +131,25 @@ def register(app: typer.Typer, name: str) -> None:
     )(evaluate_agent_run)
 
 
+def _measure_sloppiness(agent_run_dir: Path) -> None:
+    """Measure a run with the standalone sloppiness package.
+
+    The adapter isolates every failure mode (unavailable package,
+    invalid settings, analyzer errors) as logged diagnostics; they
+    never change evaluation outcomes.
+    """
+    from slop_code.sloppiness import measure_run
+
+    summary = measure_run(agent_run_dir)
+    if summary:
+        logger.info(
+            "Sloppiness measurements persisted",
+            run_directory=str(agent_run_dir),
+            checkpoints=summary["checkpoints_analyzed"],
+            status=summary["status"],
+        )
+
+
 def evaluate_agent_run(
     ctx: typer.Context,
     agent_run_dir: Annotated[
@@ -173,6 +192,15 @@ def evaluate_agent_run(
         False,  # noqa: FBT003
         "--overwrite",
         help="Re-evaluate problems even if they already have evaluation results",
+    ),
+    sloppiness: bool = typer.Option(  # noqa: FBT001,FBT003
+        False,  # noqa: FBT003
+        "--sloppiness/--no-sloppiness",
+        help=(
+            "Measure every available snapshot with the standalone "
+            "sloppiness package and persist per-checkpoint and run-level "
+            "reports (default: off)"
+        ),
     ),
 ) -> None:
     """Evaluate a directory of attempts against a problem specification."""
@@ -262,6 +290,10 @@ def evaluate_agent_run(
         )
 
     if not problems_to_eval:
+        if sloppiness:
+            # Even with nothing to (re-)evaluate, opted-in sloppiness
+            # measurement backfills every available snapshot.
+            _measure_sloppiness(agent_run_dir)
         if skipped_count > 0:
             logger.info(
                 f"No problems to evaluate ({skipped_count} already evaluated, "
@@ -292,6 +324,13 @@ def evaluate_agent_run(
         successful=eval_summary.successful,
         failed=eval_summary.failed,
     )
+
+    # Opt-in sloppiness measurement: every available snapshot in the
+    # run, including problems skipped above as already evaluated and
+    # snapshots whose correctness evaluation failed. Failures are
+    # isolated and never change evaluation outcomes.
+    if sloppiness:
+        _measure_sloppiness(agent_run_dir)
 
     report_file = agent_run_dir / CHECKPOINT_RESULTS_FILENAME
     report_errors: list[tuple[str, str]] = []

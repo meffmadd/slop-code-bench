@@ -7,6 +7,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 
 from slop_code.common.llms import TokenUsage
+from slop_code.entrypoints.config.run_config import SloppinessRunSettings
 from slop_code.evaluation import PassPolicy
 from slop_code.evaluation import ProblemConfig
 from slop_code.execution import EnvironmentSpecType
@@ -163,6 +164,15 @@ class AgentRunSpec(BaseModel):
     pass_policy: Annotated[
         PassPolicy,
         Field(description="Policy to determine if the checkpoint passed"),
+    ]
+    sloppiness: Annotated[
+        SloppinessRunSettings | None,
+        Field(
+            default=None,
+            description=(
+                "Opt-in sloppiness measurement settings; None disables it."
+            ),
+        ),
     ]
     skip_evaluation: Annotated[
         bool,

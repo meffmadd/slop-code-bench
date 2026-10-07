@@ -680,7 +680,7 @@ def test_run_problem_concurrent_eval_bounds_inflight(tmp_path):
     lock = threading.Lock()
     evaluated: list[str] = []
 
-    def fake_eval(*, checkpoint, save_dir, snapshot_dir, problem, environment):  # noqa: ANN001
+    def fake_eval(*, checkpoint, save_dir, snapshot_dir, problem, environment, sloppiness=None):  # noqa: ANN001
         with lock:
             inflight["cur"] += 1
             inflight["max"] = max(inflight["max"], inflight["cur"])

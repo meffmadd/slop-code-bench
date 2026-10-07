@@ -104,6 +104,14 @@ openhands = [
     "openhands-tools>=1.0.0a5",
     "openhands-workspace>=1.0.0a5",
 ]
+sloppiness = [
+    # Opt-in integration with the standalone sloppiness-metrics
+    # sibling checkout: `uv sync --group sloppiness`
+    "sloppiness",
+]
+
+[tool.uv.sources]
+sloppiness = { path = "../sloppiness-metrics", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/slop_code"]
