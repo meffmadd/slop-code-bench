@@ -5,3 +5,4 @@ model:
   provider: aqueduct
   name: deepseek-v4-vision-exp
 thinking: max
+save_template: ${model.name}/${agent.type}-${agent.version}_${prompt}_${thinking}
