@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel
 from pydantic import Field
@@ -698,12 +698,6 @@ class RunSummary(BaseModel):
 
     # Quality ratios (per LOC): {rubric, lint}
     ratios: RatiosStats = Field(default_factory=RatiosStats)
-
-    # Sloppiness measurement summary, present only when the run was
-    # measured (opt-in --sloppiness). Kept as a generic dict so new
-    # metrics require no model changes: coverage counts plus a compact
-    # per-problem trend table from the run-level sloppiness report.
-    sloppiness: dict[str, Any] | None = None
 
     # Composite quality scores
     verbosity: MetricStats = Field(default_factory=MetricStats)

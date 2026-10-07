@@ -181,7 +181,6 @@ def run_agent_on_problem(
         agent_type=config.agent_config.type,
         agent_version=config.agent_config.version,
         model_name=config.model_def.name,
-        sloppiness=config.sloppiness,
     )
 
     return runner.run_agent(

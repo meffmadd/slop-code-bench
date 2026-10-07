@@ -22,7 +22,6 @@ from slop_code.agent_runner.reporting import AgentCheckpointSummary
 from slop_code.agent_runner.reporting import MetricsTracker
 from slop_code.agent_runner.resume import ResumeInfo
 from slop_code.agent_runner.state import AgentStateEnum
-from slop_code.entrypoints.config.run_config import SloppinessRunSettings
 from slop_code.evaluation import CheckpointConfig
 from slop_code.evaluation import CorrectnessResults
 from slop_code.evaluation import PassPolicy
@@ -297,20 +296,8 @@ def evaluate_agent_snapshot(
     snapshot_dir: Path,
     problem: ProblemConfig,
     environment: EnvironmentSpec,
-    sloppiness: SloppinessRunSettings | None = None,
 ) -> tuple[CorrectnessResults, SnapshotQualityReport]:
     """Evaluate agent snapshot and compute quality metrics.
-
-    Args:
-        checkpoint: Checkpoint being evaluated.
-        save_dir: Checkpoint output directory.
-        snapshot_dir: Snapshot directory with the agent's workspace.
-        problem: Problem configuration.
-        environment: Environment specification.
-        sloppiness: Opt-in sloppiness measurement settings. When
-            enabled, the snapshot is also measured with the standalone
-            sloppiness package; measurement failures are logged and
-            never affect evaluation.
 
     Returns:
         Tuple of (checkpoint_report, quality_report)
@@ -352,35 +339,10 @@ def evaluate_agent_snapshot(
     )
     save_quality_metrics(save_dir, quality_metrics, file_metrics_list)
 
-    if sloppiness is not None and sloppiness.enabled:
-        _measure_sloppiness(problem, checkpoint, save_dir, sloppiness)
-
     quality_report = SnapshotQualityReport.from_snapshot_metrics(
         quality_metrics
     )
     return report, quality_report
-
-
-def _measure_sloppiness(
-    problem: ProblemConfig,
-    checkpoint: CheckpointConfig,
-    save_dir: Path,
-    settings: SloppinessRunSettings,
-) -> None:
-    """Measure one checkpoint with the standalone sloppiness package.
-
-    The adapter isolates every failure mode (unavailable package,
-    invalid settings, analyzer errors) as logged diagnostics; they
-    never change evaluation results or the run's outcome.
-    """
-    from slop_code.sloppiness import measure_checkpoint
-
-    measure_checkpoint(
-        problem=problem,
-        checkpoint=checkpoint,
-        checkpoint_dir=save_dir,
-        settings=settings.settings or None,
-    )
 
 
 def _run_inference(
@@ -859,7 +821,6 @@ class AgentRunner:
                 snapshot_dir=snapshot_dir,
                 problem=self.run_spec.problem,
                 environment=self.run_spec.environment,
-                sloppiness=self.run_spec.sloppiness,
             )
             # Record checkpoint evaluation result for progress tracking
             self.metrics_tracker.record_checkpoint_result(
@@ -988,7 +949,6 @@ class AgentRunner:
                 snapshot_dir=summary.snapshot_dir,
                 problem=self.run_spec.problem,
                 environment=self.run_spec.environment,
-                sloppiness=self.run_spec.sloppiness,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error(
